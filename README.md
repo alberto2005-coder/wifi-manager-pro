@@ -112,4 +112,4 @@ Este proyecto está bajo la Licencia MIT. Consulta el archivo `LICENSE` para obt
 
 ---
 
-Desarrollado con ❤️ por **GRGAME**.
+Desarrollado con ❤️ por **Alberto**.
