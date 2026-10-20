@@ -108,8 +108,139 @@ wifi/
 
 ## 📄 Licencia
 
-Este proyecto está bajo la Licencia MIT. Consulta el archivo `LICENSE` para obtener más detalles.
+Este proyecto está bajo la Licencia GPL-3.0. Consulta el archivo `LICENSE` para obtener más detalles.
 
 ---
 
 Desarrollado con ❤️ por **Alberto**.
+
+# 📶 WiFi Manager Pro
+
+A powerful dual-solution suite (native Desktop Client in **Flutter** and Web Console in **Node.js**) designed to manage, audit, analyze, and monitor wireless connections and local area networks.
+
+This ecosystem provides full management of Windows Wi-Fi profiles, nearby channel spectrum analysis, active device scanning, fast security audits, and real-time bandwidth monitoring.
+
+---
+
+## 🚀 Key Features
+
+### 💻 Desktop Client (Flutter)
+
+* **Native Wireless Management:** Connect to and forget Wi-Fi network profiles directly via system commands (`netsh wlan`).
+* **Integrated Speed Test:** Real-world measurements for download (Cloudflare CDN) and upload (HTTP POST against the local Node.js server).
+* **Real-Time Traffic Monitor:** Real-time line chart displaying download and upload rates (Mbps) across active network adapters.
+* **Security Audit:** Automated diagnostics evaluating password complexity and encryption protocols for saved networks.
+* **LAN Scanner (ARP):** Fast discovery of active devices connected to the same subnet.
+* **Port Scanner:** Utility to scan standard open TCP ports on any target IP address.
+* **Key Generator:** High-entropy, military-grade password generator.
+
+### 🌐 Web Console (Node.js & Vanilla JS/CSS)
+
+* **Modern Dashboard:** Unified interface with seamless tab navigation (Dashboard, Security & Channels, Pro Tools, Settings).
+* **Multi-Language & Theme Support:** Instant toggling between English and Spanish, as well as Light and Dark modes. Preferences persist in `localStorage`.
+* **Wi-Fi Channel Map:** Interactive Chart.js visualization mapping channel occupancy across nearby networks to identify congestion.
+* **Web Traffic Monitoring:** Interactive real-time graph tracking host bandwidth utilization.
+* **Diagnostics Console:** One-click execution of system utilities such as `flushdns`, `release`, and `renew` IP.
+
+---
+
+## 🛠️ Built With
+
+* **Flutter (Dart):** Responsive desktop UI for the native Windows client.
+* **Node.js & Express:** Backend server hosting scan endpoints, upload speed test targets, and hardware metrics.
+* **Chart.js / FL Chart:** Dynamic data visualization for traffic analysis and channel spectrums.
+* **HTML5, Vanilla CSS & Modern JS:** Lightweight, responsive web interface built without heavy framework dependencies.
+
+---
+
+## 📋 Prerequisites
+
+Ensure the following tools are installed before proceeding:
+
+1. **Flutter SDK** (Version 3.27 or higher recommended) -> [Installation Guide](https://docs.flutter.dev/get-started/install)
+2. **Node.js** (Version 16.x or higher recommended) -> [Node.js Downloads](https://nodejs.org/)
+3. **Git** for version control.
+
+---
+
+## 📦 Setup and Execution
+
+### 1. Clone the Repository
+
+```bash
+git clone <YOUR_REPOSITORY_URL>
+cd wifi
+
+```
+
+### 2. Start the Backend Server (Node.js)
+
+The backend powers the web interface and handles the upload speed test endpoint for the Flutter application.
+
+```bash
+# Install server dependencies
+npm install
+
+# Start in development mode
+npm run dev
+
+```
+
+The server will be reachable at: `http://localhost:3000`
+
+### 3. Launch the Desktop Application (Flutter)
+
+Open a separate terminal session at the project root to run the Windows desktop client:
+
+```bash
+# Fetch Flutter packages
+flutter pub get
+
+# Run the project on Windows Desktop
+flutter run -d windows
+
+```
+
+---
+
+## 🛡️ Wi-Fi Security Audit
+
+The system evaluates saved wireless networks, generating a security score from **0% to 100%** based on the following criteria:
+
+* **Deprecated Encryption (WEP / WPA1):** Heavy scoring penalty due to well-documented critical vulnerabilities.
+* **Short Passwords (< 8 characters):** Security warning highlighting exposure to brute-force attacks.
+* **Recommended Encryption (WPA2/WPA3 AES):** Awards the highest security score.
+
+---
+
+## 📂 Project Structure
+
+```
+wifi/
+├── lib/                     # Flutter source code
+│   ├── localization/        # Multi-language support (ES/EN)
+│   ├── models/              # Data models (Network, Device, etc.)
+│   ├── providers/           # Global state management (NetworkProvider)
+│   ├── screens/             # UI screens (Traffic, Analyzer, Tools)
+│   ├── services/            # Native services (WiFi netsh, SpeedTest, Storage)
+│   └── main.dart            # Entry point & App Dashboard
+├── public/                  # Web Frontend (served by Node.js)
+│   ├── index.html           # Web console markup
+│   ├── index.css            # Modern styling and light/dark theme variables
+│   └── script.js            # Client-side logic, Chart.js, and translations
+├── assets/                  # Icons and localization JSON files
+├── server.js                # Express backend server and system APIs
+├── package.json             # Node.js dependencies
+└── pubspec.yaml             # Flutter configuration and dependencies
+
+```
+
+---
+
+## 📄 License
+
+This project is licensed under the GPL-3.0 License. See the `LICENSE` file for details.
+
+---
+
+Developed with ❤️ by **Alberto**.
