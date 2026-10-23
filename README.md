@@ -39,8 +39,11 @@ Este ecosistema permite un control completo de perfiles WiFi en Windows, anális
 
 Asegúrate de tener instalados los siguientes componentes antes de comenzar:
 1.  **Flutter SDK** (Versión 3.27 o superior recomendada) -> [Guía de Instalación](https://docs.flutter.dev/get-started/install)
-2.  **Node.js** (Versión 16.x o superior recomendada) -> [Descargas Node.js](https://nodejs.org/)
+2.  **Node.js** 24.22.1+ (LTS recomendado; también válido 22.23.4+ o 26.12.1+) -> [Descargas Node.js](https://nodejs.org/)
 3.  **Git** para control de versiones.
+
+> El componente servidor fija la versión en `.nvmrc` y `engines`; `npm install` falla con Node
+> 16/18/20 (EOL y sin parches). Si solo usas la app Flutter, Node no es necesario.
 
 ---
 
@@ -158,8 +161,11 @@ This ecosystem provides full management of Windows Wi-Fi profiles, nearby channe
 Ensure the following tools are installed before proceeding:
 
 1. **Flutter SDK** (Version 3.27 or higher recommended) -> [Installation Guide](https://docs.flutter.dev/get-started/install)
-2. **Node.js** (Version 16.x or higher recommended) -> [Node.js Downloads](https://nodejs.org/)
+2. **Node.js** 24.22.1+ (LTS recommended; 22.23.4+ or 26.12.1+ also valid) -> [Node.js Downloads](https://nodejs.org/)
 3. **Git** for version control.
+
+> The server component pins the runtime in `.nvmrc` and `engines`; `npm install` fails on
+> Node 16/18/20 (EOL, unpatched). If you only use the Flutter app, Node is not required.
 
 ---
 
