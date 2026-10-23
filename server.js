@@ -1,5 +1,5 @@
 const express = require('express');
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const https = require('https');
 const path = require('path');
 const os = require('os');
@@ -7,17 +7,76 @@ const net = require('net');
 const fs = require('fs');
 
 const app = express();
-const PORT = 3000;
+const PORT = parseInt(process.env.PORT, 10) || 3000;
+const HOST = process.env.HOST || '127.0.0.1';
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json()); // Add JSON body parser
 
-// Ejecutar comando con promesa
-function runCommand(cmd) {
+// Ejecutar comando seguro sin pasar por shell para prevenir inyección de comandos
+function runSafeCommand(file, args = [], options = {}) {
   return new Promise((resolve) => {
-    exec(cmd, { encoding: 'utf8', maxBuffer: 1024 * 1024 }, (err, stdout) => {
-      resolve(stdout || '');
-    });
+    execFile(
+      file,
+      args,
+      {
+        encoding: 'utf8',
+        maxBuffer: 10 * 1024 * 1024,
+        windowsHide: true,
+        ...options,
+      },
+      (err, stdout) => {
+        resolve(stdout || '');
+      }
+    );
+  });
+}
+
+// Escapar caracteres XML para perfiles de red
+function escapeXml(unsafe) {
+  if (typeof unsafe !== 'string') return '';
+  return unsafe.replace(/[<>&'"]/g, (c) => {
+    switch (c) {
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '&': return '&amp;';
+      case '\'': return '&apos;';
+      case '"': return '&quot;';
+      default: return c;
+    }
+  });
+}
+
+// Verificar si la petición proviene de localhost (loopback)
+function isLocalhost(req) {
+  const ip = req.socket?.remoteAddress || req.connection?.remoteAddress || '';
+  return (
+    ip === '127.0.0.1' ||
+    ip === '::1' ||
+    ip === '::ffff:127.0.0.1' ||
+    ip.endsWith('127.0.0.1')
+  );
+}
+
+// Middleware de autorización para endpoints sensibles (contraseñas, borrar/conectar, diagnósticos)
+function requireLocalOrAuth(req, res, next) {
+  // Permitido siempre desde localhost
+  if (isLocalhost(req)) {
+    return next();
+  }
+
+  // Si se configuró API_KEY, permitir con cabecera o query param
+  const configuredKey = process.env.API_KEY;
+  if (configuredKey) {
+    const providedKey = req.headers['x-api-key'] || req.query.apiKey;
+    if (providedKey && providedKey === configuredKey) {
+      return next();
+    }
+  }
+
+  return res.status(403).json({
+    success: false,
+    error: 'Acceso no autorizado: la consulta de contraseñas y operaciones del sistema requieren acceso local o autenticación x-api-key.'
   });
 }
 
@@ -53,8 +112,7 @@ function scanPort(host, port, timeout = 400) {
 async function getNetworkStats() {
   const platform = os.platform();
   if (platform === 'win32') {
-    const output = await runCommand('netsh interface ipv4 show subinterfaces');
-    console.log("getNetworkStats output length:", output.length);
+    const output = await runSafeCommand('netsh', ['interface', 'ipv4', 'show', 'subinterfaces']);
     const lines = output.split('\n');
     let received = 0;
     let sent = 0;
@@ -63,8 +121,8 @@ async function getNetworkStats() {
       if (match) {
         const interfaceName = match[3].toLowerCase();
         if (interfaceName.includes('loopback')) continue;
-        received += parseInt(match[1]) || 0;
-        sent += parseInt(match[2]) || 0;
+        received += parseInt(match[1], 10) || 0;
+        sent += parseInt(match[2], 10) || 0;
       }
     }
     return { received, sent };
@@ -77,8 +135,8 @@ async function getNetworkStats() {
       for (const line of lines) {
         if (line.includes(':') && !line.includes('lo')) {
           const parts = line.split(':')[1].trim().split(/\s+/);
-          received += parseInt(parts[0]) || 0;
-          sent += parseInt(parts[8]) || 0;
+          received += parseInt(parts[0], 10) || 0;
+          sent += parseInt(parts[8], 10) || 0;
         }
       }
       return { received, sent };
@@ -87,11 +145,9 @@ async function getNetworkStats() {
     }
   } else if (platform === 'darwin') {
     try {
-      const output = await runCommand('netstat -ib -I en0');
+      const output = await runSafeCommand('netstat', ['-ib', '-I', 'en0']);
       const lines = output.trim().split('\n');
       if (lines.length > 1) {
-        const parts = lines[1].trim().split(/\s+/);
-        // Column mapping can vary, return placeholder or 0
         return { received: 0, sent: 0 };
       }
     } catch (e) {}
@@ -99,30 +155,27 @@ async function getNetworkStats() {
   return { received: 0, sent: 0 };
 }
 
-
 // Obtener gateway (IP del router)
-function getDefaultGateway() {
-  return new Promise((resolve) => {
-    let cmd = 'ipconfig';
-    const platform = os.platform();
-    if (platform === 'darwin') cmd = 'route -n get default';
-    else if (platform === 'linux') cmd = 'ip route show default';
-
-    exec(cmd, { encoding: 'utf8' }, (err, stdout) => {
-      if (err) return resolve(null);
-      if (platform === 'darwin') {
-        const match = stdout.match(/gateway:\s*([\d.]+)/i);
-        resolve(match ? match[1] : null);
-      } else if (platform === 'linux') {
-        const match = stdout.match(/default via\s*([\d.]+)/i);
-        resolve(match ? match[1] : null);
-      } else {
-        const match = stdout.match(/Puerta de enlace predeterminada[.\s]+:\s*([\d.]+)/i)
-          || stdout.match(/Default Gateway[.\s]+:\s*([\d.]+)/i);
-        resolve(match ? match[1] : null);
-      }
-    });
-  });
+async function getDefaultGateway() {
+  const platform = os.platform();
+  try {
+    if (platform === 'darwin') {
+      const stdout = await runSafeCommand('route', ['-n', 'get', 'default']);
+      const match = stdout.match(/gateway:\s*([\d.]+)/i);
+      return match ? match[1] : null;
+    } else if (platform === 'linux') {
+      const stdout = await runSafeCommand('ip', ['route', 'show', 'default']);
+      const match = stdout.match(/default via\s*([\d.]+)/i);
+      return match ? match[1] : null;
+    } else {
+      const stdout = await runSafeCommand('ipconfig', []);
+      const match = stdout.match(/Puerta de enlace predeterminada[.\s]+:\s*([\d.]+)/i)
+        || stdout.match(/Default Gateway[.\s]+:\s*([\d.]+)/i);
+      return match ? match[1] : null;
+    }
+  } catch (_) {
+    return null;
+  }
 }
 
 // Obtener IP local
@@ -142,7 +195,7 @@ function getLocalIP() {
 async function getCurrentNetwork() {
   const platform = os.platform();
   if (platform === 'darwin') {
-    const output = await runCommand('/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -I');
+    const output = await runSafeCommand('/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport', ['-I']);
     const ssidMatch = output.match(/\s+SSID:\s+(.+)/i);
     const bssidMatch = output.match(/\s+BSSID:\s+(.+)/i);
     const rateMatch = output.match(/\s+lastTxRate:\s+(\d+)/i);
@@ -155,7 +208,7 @@ async function getCurrentNetwork() {
       band: 'N/A'
     };
   } else if (platform === 'linux') {
-    const output = await runCommand('nmcli -t -f active,ssid,signal,bssid,rate dev wifi');
+    const output = await runSafeCommand('nmcli', ['-t', '-f', 'active,ssid,signal,bssid,rate', 'dev', 'wifi']);
     const lines = output.split('\n');
     for (const line of lines) {
       if (line.startsWith('yes:')) {
@@ -172,7 +225,7 @@ async function getCurrentNetwork() {
     return { ssid: null, signal: null, speed: null, bssid: null, band: null };
   } else {
     // Windows
-    const output = await runCommand('netsh wlan show interfaces');
+    const output = await runSafeCommand('netsh', ['wlan', 'show', 'interfaces']);
     const ssidMatch   = output.match(/[ \t]SSID[ \t]+:[ \t]+(.+)/);
     const signalMatch = output.match(/Se.al\s*:\s*(\d+)%/i);
     const speedMatch  = output.match(/Velocidad de recepci.n \(Mbps\)\s*:\s*([\d.]+)/i)
@@ -190,14 +243,13 @@ async function getCurrentNetwork() {
   }
 }
 
-
 // Obtener todas las redes guardadas con sus contraseñas
 async function getSavedNetworks() {
   const platform = os.platform();
   const networks = [];
 
   if (platform === 'darwin') {
-    const output = await runCommand('networksetup -listpreferredwirelessnetworks en0');
+    const output = await runSafeCommand('networksetup', ['-listpreferredwirelessnetworks', 'en0']);
     const lines = output.split('\n').slice(1);
     for (const line of lines) {
       if (line.trim()) {
@@ -212,7 +264,7 @@ async function getSavedNetworks() {
       }
     }
   } else if (platform === 'linux') {
-    const output = await runCommand('nmcli -t -f NAME connection show');
+    const output = await runSafeCommand('nmcli', ['-t', '-f', 'NAME', 'connection', 'show']);
     const lines = output.split('\n');
     for (const line of lines) {
       if (line.trim()) {
@@ -228,21 +280,25 @@ async function getSavedNetworks() {
     }
   } else {
     // Windows
-    const profilesOutput = await runCommand('netsh wlan show profiles');
+    const profilesOutput = await runSafeCommand('netsh', ['wlan', 'show', 'profiles']);
     const profileMatches = profilesOutput.matchAll(/Perfil de todos los usuarios\s*:\s*(.+)|All User Profile\s*:\s*(.+)/gi);
     const profiles = [];
 
     for (const match of profileMatches) {
       const name = (match[1] || match[2]).trim();
-      profiles.push(name);
+      if (name) profiles.push(name);
     }
 
     for (const name of profiles) {
-      const safeName = name.replace(/"/g, '\\"');
-      const detail = await runCommand(`netsh wlan show profile name="${safeName}" key=clear`);
+      // Uso de argumentos directos en execFile evita inyección de comandos
+      const detail = await runSafeCommand('netsh', ['wlan', 'show', 'profile', `name=${name}`, 'key=clear']);
 
       const passwordMatch = detail.match(/Contenido de la clave\s*:\s*(.+)|Key Content\s*:\s*(.+)/i);
-      const password = passwordMatch ? (passwordMatch[1] || passwordMatch[2]).trim() : null;
+      let password = passwordMatch ? (passwordMatch[1] || passwordMatch[2]).trim() : null;
+
+      if (process.env.HIDE_PASSWORDS === 'true' && password) {
+        password = '••••••••';
+      }
 
       const authAll = [...detail.matchAll(/Autenticaci.n\s*:\s*(.+)|Authentication\s*:\s*(.+)/gi)]
         .map(m => (m[1] || m[2]).trim());
@@ -269,8 +325,8 @@ async function getSavedNetworks() {
   return networks;
 }
 
-// API: obtener datos de redes
-app.get('/api/networks', async (req, res) => {
+// API: obtener datos de redes (protegido por localhost o API_KEY)
+app.get('/api/networks', requireLocalOrAuth, async (req, res) => {
   try {
     const [networks, currentNetwork, gateway, localIP] = await Promise.all([
       getSavedNetworks(),
@@ -305,7 +361,7 @@ app.get('/api/scan', async (req, res) => {
     const nearby = [];
 
     if (platform === 'darwin') {
-      const output = await runCommand('/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -s');
+      const output = await runSafeCommand('/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport', ['-s']);
       const lines = output.split('\n').slice(1);
       for (const line of lines) {
         if (!line.trim()) continue;
@@ -321,7 +377,7 @@ app.get('/api/scan', async (req, res) => {
         }
       }
     } else if (platform === 'linux') {
-      const output = await runCommand('nmcli -t -f ssid,bssid,signal,chan,security dev wifi');
+      const output = await runSafeCommand('nmcli', ['-t', '-f', 'ssid,bssid,signal,chan,security', 'dev', 'wifi']);
       const lines = output.split('\n');
       for (const line of lines) {
         if (!line.trim()) continue;
@@ -336,7 +392,7 @@ app.get('/api/scan', async (req, res) => {
       }
     } else {
       // Windows
-      const output = await runCommand('netsh wlan show networks mode=bssid');
+      const output = await runSafeCommand('netsh', ['wlan', 'show', 'networks', 'mode=bssid']);
       const blocks = output.split(/\nSSID\s+\d+\s*:/).slice(1);
 
       for (const block of blocks) {
@@ -372,7 +428,7 @@ app.get('/api/devices', async (req, res) => {
     const devices = [];
 
     if (platform === 'win32') {
-      output = await runCommand('arp -a');
+      output = await runSafeCommand('arp', ['-a']);
       const lines = output.split('\n');
       let currentInterface = '';
 
@@ -396,7 +452,7 @@ app.get('/api/devices', async (req, res) => {
       }
     } else {
       // Basic support for linux/mac
-      output = await runCommand('arp -a');
+      output = await runSafeCommand('arp', ['-a']);
       const lines = output.split('\n');
       for (const line of lines) {
         // e.g. ? (192.168.1.10) at 00:11:22:33:44:55 ...
@@ -414,14 +470,16 @@ app.get('/api/devices', async (req, res) => {
 });
 
 // API: Borrar perfil de red (Olvidar)
-app.post('/api/network/delete', async (req, res) => {
+app.post('/api/network/delete', requireLocalOrAuth, async (req, res) => {
   try {
     const { ssid } = req.body;
-    if (!ssid) throw new Error('SSID is required');
+    if (!ssid || typeof ssid !== 'string' || ssid.length > 256) {
+      throw new Error('SSID válido es requerido');
+    }
 
     const platform = os.platform();
     if (platform === 'win32') {
-      const output = await runCommand(`netsh wlan delete profile name="${ssid}"`);
+      const output = await runSafeCommand('netsh', ['wlan', 'delete', 'profile', `name=${ssid.trim()}`]);
       if (output.toLowerCase().includes('no se encuentra') || output.toLowerCase().includes('not found')) {
          throw new Error('Perfil no encontrado');
       }
@@ -435,21 +493,30 @@ app.post('/api/network/delete', async (req, res) => {
 });
 
 // API: Conectarse a una nueva red (Generando XML - Solo Windows)
-app.post('/api/network/connect', async (req, res) => {
+app.post('/api/network/connect', requireLocalOrAuth, async (req, res) => {
   try {
     const { ssid, password } = req.body;
-    if (!ssid || !password) throw new Error('SSID y password son requeridos');
+    if (!ssid || typeof ssid !== 'string' || !password || typeof password !== 'string') {
+      throw new Error('SSID y password son requeridos');
+    }
+    const cleanSsid = ssid.trim();
+    if (cleanSsid.length > 256 || password.length > 256) {
+      throw new Error('Parámetros exceden longitud máxima permitida');
+    }
 
     const platform = os.platform();
     if (platform === 'win32') {
-      const hexSsid = Buffer.from(ssid, 'utf8').toString('hex');
+      const hexSsid = Buffer.from(cleanSsid, 'utf8').toString('hex');
+      const safeSsidXml = escapeXml(cleanSsid);
+      const safePassXml = escapeXml(password);
+
       const xmlProfile = `<?xml version="1.0"?>
 <WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
-	<name>${ssid}</name>
+	<name>${safeSsidXml}</name>
 	<SSIDConfig>
 		<SSID>
 			<hex>${hexSsid}</hex>
-			<name>${ssid}</name>
+			<name>${safeSsidXml}</name>
 		</SSID>
 	</SSIDConfig>
 	<connectionType>ESS</connectionType>
@@ -464,24 +531,29 @@ app.post('/api/network/connect', async (req, res) => {
 			<sharedKey>
 				<keyType>passPhrase</keyType>
 				<protected>false</protected>
-				<keyMaterial>${password}</keyMaterial>
+				<keyMaterial>${safePassXml}</keyMaterial>
 			</sharedKey>
 		</security>
 	</MSM>
 </WLANProfile>`;
 
-      const tempPath = path.join(os.tmpdir(), 'wifi_profile.xml');
+      const tempFileName = `wifi_profile_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.xml`;
+      const tempPath = path.join(os.tmpdir(), tempFileName);
       fs.writeFileSync(tempPath, xmlProfile, 'utf8');
 
-      const addOut = await runCommand(`netsh wlan add profile filename="${tempPath}"`);
-      fs.unlinkSync(tempPath);
+      try {
+        const addOut = await runSafeCommand('netsh', ['wlan', 'add', 'profile', `filename=${tempPath}`]);
+        if (addOut.toLowerCase().includes('error')) {
+          throw new Error('No se pudo añadir el perfil: ' + addOut);
+        }
 
-      if (addOut.toLowerCase().includes('error')) {
-        throw new Error('No se pudo añadir el perfil: ' + addOut);
+        await runSafeCommand('netsh', ['wlan', 'connect', `name=${cleanSsid}`]);
+        res.json({ success: true, message: 'Intentando conectar...' });
+      } finally {
+        if (fs.existsSync(tempPath)) {
+          try { fs.unlinkSync(tempPath); } catch (_) {}
+        }
       }
-
-      const connectOut = await runCommand(`netsh wlan connect name="${ssid}"`);
-      res.json({ success: true, message: 'Intentando conectar...' });
     } else {
       throw new Error('Función solo implementada en Windows por ahora');
     }
@@ -491,24 +563,25 @@ app.post('/api/network/connect', async (req, res) => {
 });
 
 // API: Diagnósticos rápidos
-app.post('/api/diagnostics', async (req, res) => {
+app.post('/api/diagnostics', requireLocalOrAuth, async (req, res) => {
   try {
     const { action } = req.body;
-    let cmd = '';
-    const platform = os.platform();
-
-    if (platform === 'win32') {
-      if (action === 'flushdns') cmd = 'ipconfig /flushdns';
-      else if (action === 'release') cmd = 'ipconfig /release';
-      else if (action === 'renew') cmd = 'ipconfig /renew';
-      else throw new Error('Acción no soportada');
-    } else {
-      // Very basic unix equivalent for flushdns
-      if (action === 'flushdns' && platform === 'darwin') cmd = 'sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder';
-      else throw new Error('Acción de diagnóstico limitada o no soportada en este SO');
+    const validActions = ['flushdns', 'release', 'renew'];
+    if (!action || !validActions.includes(action)) {
+      throw new Error('Acción de diagnóstico no soportada o inválida');
     }
 
-    const output = await runCommand(cmd);
+    const platform = os.platform();
+    let output = '';
+
+    if (platform === 'win32') {
+      output = await runSafeCommand('ipconfig', [`/${action}`]);
+    } else if (action === 'flushdns' && platform === 'darwin') {
+      output = await runSafeCommand('dscacheutil', ['-flushcache']);
+    } else {
+      throw new Error('Acción de diagnóstico limitada o no soportada en este SO');
+    }
+
     res.json({ success: true, output: output.trim() });
   } catch (err) {
     res.json({ success: false, error: err.message });
@@ -519,7 +592,9 @@ app.post('/api/diagnostics', async (req, res) => {
 app.post('/api/scan-ports', async (req, res) => {
   try {
     const { ip } = req.body;
-    if (!ip) throw new Error('IP is required');
+    if (!ip || typeof ip !== 'string' || !net.isIP(ip)) {
+      throw new Error('Dirección IP inválida');
+    }
     const commonPorts = [21, 22, 23, 25, 53, 80, 110, 443, 3306, 3389, 8080];
     const results = [];
     
@@ -556,7 +631,7 @@ app.get('/api/ping', (req, res) => {
 
 // Descarga: hace proxy desde Cloudflare → mide velocidad real de internet
 app.get('/api/speedtest/download', (req, res) => {
-  const bytes = Math.min(parseInt(req.query.bytes) || 25 * 1024 * 1024, 100 * 1024 * 1024);
+  const bytes = Math.min(parseInt(req.query.bytes, 10) || 25 * 1024 * 1024, 100 * 1024 * 1024);
   const cfUrl = `https://speed.cloudflare.com/__down?bytes=${bytes}`;
 
   res.setHeader('Content-Type', 'application/octet-stream');
@@ -579,21 +654,24 @@ app.post('/api/speedtest/upload', express.raw({ type: '*/*', limit: '50mb' }), (
 // ─── DEBUG ENDPOINTS ─────────────────────────────────────────────────────
 
 // API debug: ver perfil crudo de una red
-app.get('/api/debug-profile', async (req, res) => {
-  const name = req.query.name || '';
-  const raw = await runCommand(`netsh wlan show profile name="${name.replace(/"/g,'\\"')}" key=clear`);
+app.get('/api/debug-profile', requireLocalOrAuth, async (req, res) => {
+  const name = typeof req.query.name === 'string' ? req.query.name : '';
+  const raw = await runSafeCommand('netsh', ['wlan', 'show', 'profile', `name=${name}`, 'key=clear']);
   res.type('text/plain').send(raw);
 });
 
 // API debug: ver output crudo de netsh
-app.get('/api/debug', async (req, res) => {
-  const raw = await runCommand('netsh wlan show interfaces');
+app.get('/api/debug', requireLocalOrAuth, async (req, res) => {
+  const raw = await runSafeCommand('netsh', ['wlan', 'show', 'interfaces']);
   res.type('text/plain').send(raw);
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`\n✅ WiFi Manager corriendo en: http://localhost:${PORT}`);
+const server = app.listen(PORT, HOST, () => {
+  console.log(`\n✅ WiFi Manager corriendo en: http://${HOST}:${PORT}`);
   console.log(`💻 Plataforma detectada: ${os.platform()}`);
+  if (HOST === '0.0.0.0') {
+    console.warn('⚠️ AVISO DE SEGURIDAD: El servidor escucha en 0.0.0.0. Asegúrese de configurar API_KEY si expone la red.');
+  }
 });
 
 process.on('SIGTERM', () => server.close());

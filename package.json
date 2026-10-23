@@ -2,6 +2,9 @@
   "name": "wifi-manager",
   "version": "1.0.0",
   "description": "WiFi Network Manager - Ver redes guardadas y acceder al panel de admin",
+  "author": "Alberto Ortiz <albertoortixsanchez@gmail.com>",
+  "license": "GPL-3.0",
+  "repository": "https://github.com/alberto2005-coder/wifi-manager-pro",
   "main": "server.js",
   "engines": {
     "node": "^22.23.4 || ^24.22.1 || ^26.12.1"
